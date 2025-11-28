@@ -1,0 +1,3 @@
+bandit[pip]>=1.7.5
+semgrep>=1.0
+pip-audit>=2.0

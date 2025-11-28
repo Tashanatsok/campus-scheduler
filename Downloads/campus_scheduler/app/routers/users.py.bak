@@ -1,0 +1,195 @@
+# app/routers/users.py  (or wherever /login lives)
+# ----------  app/routers/users.py  ----------
+from fastapi import APIRouter, Depends, HTTPException
+from fastapi.security import OAuth2PasswordRequestForm
+from pydantic import BaseModel, EmailStr
+from sqlalchemy.orm import Session
+from ..db import SessionLocal
+from ..models import User
+from ..auth import hash_password, verify_password, create_access_token, require_role
+
+router = APIRouter(prefix="/users", tags=["users"])
+
+# ------------------------------------------------------------------
+# Shared models
+# ------------------------------------------------------------------
+class SignupRequest(BaseModel):
+    email: EmailStr
+    password: str
+    role: str = "student"
+
+class LoginRequest(BaseModel):          # still used by /signup if you want
+    email: EmailStr
+    password: str
+
+class TokenResp(BaseModel):             # NEW – for Swagger scopes
+    access_token: str
+    token_type: str = "bearer"
+    scopes: list[str] = []
+
+class MeResponse(BaseModel):
+    email: EmailStr
+    role: str
+
+# ------------------------------------------------------------------
+# DB helper
+# ------------------------------------------------------------------
+def get_db():
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
+
+# ------------------------------------------------------------------
+# Routes come after this point – you already have them
+# ------------------------------------------------------------------
+@router.post("/signup")
+def signup(payload: SignupRequest, db: Session = Depends(get_db)):
+    ...
+
+@router.post("/login", response_model=TokenResp)
+def login(form_data: OAuth2PasswordRequestForm = Depends(),
+          db: Session = Depends(get_db)):
+    ...
+
+@router.get("/me", response_model=MeResponse)
+def me(claims=Depends(require_role("student", "instructor", "admin"))):
+    ...
+from fastapi import Depends, HTTPException, status
+from fastapi.security import OAuth2PasswordRequestForm
+from pydantic import BaseModel
+
+from fastapi import APIRouter
+
+router = APIRouter(prefix="/users", tags=["users"])
+
+class TokenResp(BaseModel):
+    access_token: str
+    token_type: str = "bearer"
+    scopes: list[str] = []          # <-- add this
+
+"""@router.post("/users/login", response_model=TokenResp)
+async def login(form_data: OAuth2PasswordRequestForm = Depends()):
+    user = authenticate_user(form_data.username, form_data.password)
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Incorrect username or password",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    # if you really use scopes, build them here
+    scopes = form_data.scopes
+    token = create_access_token(data={"sub": user.email, "scopes": scopes})
+    return TokenResp(access_token=token, scopes=scopes)
+"""
+# ----------  replace the old /login route completely ----------
+from fastapi.security import OAuth2PasswordRequestForm   # add this import
+
+@router.post("/login", response_model=TokenResp)
+def login(
+    form_data: OAuth2PasswordRequestForm = Depends(),
+    db: Session = Depends(get_db)
+):
+    # form_data.username is actually the e-mail
+    user = db.query(User).filter(User.email == form_data.username).first()
+    if not user or not verify_password(form_data.password, user.password_hash):
+        raise HTTPException(status_code=401, detail="Invalid credentials")
+
+    # build token (your helper expects sub + role)
+    token_data = {"sub": user.email, "role": user.role}
+    if form_data.scopes:                      # scopes list (may be empty)
+        token_data["scopes"] = form_data.scopes
+    access_token = create_access_token(**token_data)
+
+    return TokenResp(
+        access_token=access_token,
+        scopes=form_data.scopes or []
+    )
+# app/main.py  (or wherever you build the FastAPI app)
+from fastapi import FastAPI
+from fastapi.security import OAuth2PasswordBearer
+
+oauth2_scheme = OAuth2PasswordBearer(
+    tokenUrl="/users/login",
+    scopes={}          # or {"admin": "Admin rights", "user": "Regular user"}
+)
+
+app = FastAPI()
+app.include_router(users.router)
+
+from fastapi import APIRouter, Depends, HTTPException
+from pydantic import BaseModel, EmailStr
+from sqlalchemy.orm import Session
+from ..db import SessionLocal
+from ..models import User
+from ..auth import hash_password, verify_password, create_access_token, require_role
+
+router = APIRouter(prefix="/users", tags=["users"])
+
+class SignupRequest(BaseModel):
+    email: EmailStr
+    password: str
+    role: str = "student"
+
+class LoginRequest(BaseModel):
+    email: EmailStr
+    password: str
+
+class TokenResponse(BaseModel):
+    access_token: str
+    token_type: str = "bearer"
+
+class MeResponse(BaseModel):
+    email: EmailStr
+    role: str
+
+# DB session dependency
+
+def get_db():
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
+
+@router.post("/signup")
+def signup(payload: SignupRequest, db: Session = Depends(get_db)):
+    if len(payload.password.encode("utf-8")) > 128:
+        # You can pick 128 or 64 as your policy limit
+        raise HTTPException(status_code=400, detail="Password too long")
+
+    if db.query(User).filter(User.email == payload.email).first():
+        raise HTTPException(status_code=400, detail="Email already exists")
+
+    user = User(
+        email=payload.email,
+        password_hash=hash_password(payload.password),
+        role=payload.role
+    )
+    db.add(user)
+    db.commit()
+    return {"message": "user created"}
+        
+
+@router.post("/signup")
+def signup(payload: SignupRequest, db: Session = Depends(get_db)):
+    if db.query(User).filter(User.email == payload.email).first():
+        raise HTTPException(status_code=400, detail="Email already exists")
+    user = User(email=payload.email, password_hash=hash_password(payload.password), role=payload.role)
+    db.add(user)
+    db.commit()
+    return {"message": "user created"}
+
+@router.post("/login", response_model=TokenResponse)
+def login(payload: LoginRequest, db: Session = Depends(get_db)):
+    user = db.query(User).filter(User.email == payload.email).first()
+    if not user or not verify_password(payload.password, user.password_hash):
+        raise HTTPException(status_code=401, detail="Invalid credentials")
+    token = create_access_token(sub=user.email, role=user.role)
+    return TokenResponse(access_token=token)
+
+@router.get("/me", response_model=MeResponse)
+def me(claims = Depends(require_role("student","instructor","admin"))):
+    return MeResponse(email=claims["sub"], role=claims["role"])
+
