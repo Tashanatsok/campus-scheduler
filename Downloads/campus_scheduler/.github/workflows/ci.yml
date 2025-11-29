@@ -1,5 +1,9 @@
 name: Security-CI
-on: [push, pull_request]
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
 
 jobs:
   lint-test-scan:
@@ -7,20 +11,35 @@ jobs:
     services:
       postgres:
         image: postgres:15
-        env: { POSTGRES_PASSWORD: postgres }
+        env:
+          POSTGRES_PASSWORD: postgres
         ports: ["5432:5432"]
         options: --health-cmd pg_isready --health-interval 10s --health-timeout 5s --health-retries 5
+
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
-        with: { python-version: '3.11' }
-      - run: pip install -r requirements.txt -r requirements-dev.txt
-      - run: pre-commit run --all-files
-      - run: pytest --cov=app --cov-fail-under=80
-      - run: pip-audit
-      - name: Build image
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt -r requirements-dev.txt
+
+      - name: Pre-commit hooks
+        run: pre-commit run --all-files
+
+      - name: Test with coverage
+        run: PYTHONPATH=. pytest --cov=app --cov-fail-under=80
+
+      - name: Dependency audit
+        run: pip-audit
+
+      - name: Build Docker image
         run: docker build -t app:${{ github.sha }} .
-      - name: Trivy scan
+
+      - name: Trivy vulnerability scan
         uses: aquasecurity/trivy-action@master
         with:
           image-ref: app:${{ github.sha }}
